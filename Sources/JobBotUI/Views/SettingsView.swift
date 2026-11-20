@@ -72,8 +72,8 @@ struct SettingsView: View {
                 Toggle("Download job pages I add by link", isOn: $app.data.preferences.fetchJobPages)
                 Text("Only the page address goes to that site. Sites that don't allow automated access (LinkedIn, Indeed, Handshake and similar) are never downloaded; paste their descriptions instead.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Toggle("Search public company job boards (Greenhouse, Lever, Ashby)", isOn: $app.data.preferences.publicJobBoards)
-                Text("These are the job lists companies publish for anyone to read. Only a request for the list is sent.")
+                Toggle("Search public company job boards", isOn: $app.data.preferences.publicJobBoards)
+                Text("Greenhouse, Lever, Ashby, SmartRecruiters and Workable job lists, and Workday careers sites: the listings companies publish for anyone to read. Only requests for job lists (and, for Workday sites, your search terms) are sent. Results appear in Jobs › Found.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Job sources") }
 

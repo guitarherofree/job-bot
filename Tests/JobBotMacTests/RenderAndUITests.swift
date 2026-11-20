@@ -163,8 +163,30 @@ final class UISnapshotTests: XCTestCase {
         m.draftAnswers(job: job.id, questionsText: "Email address\nAre you authorized to work in the United States?\nDescribe your experience with bias and sensitivity reviews.\nDo you have experience with Articulate Storyline?")
         m.data.examplePatterns = [ExampleAnalyzer.analyze(SampleData.resumeText, label: "Career center sample")]
         m.data.activity = [ActivityRecord(service: "Job page at careers.example.com", purpose: "Read a job posting you added", dataSent: "The page address only", bytes: 0)]
+        m.allowAutomaticBoardSearch = false
+        var found = FoundListings()
+        found.merge(Self.sampleListings, searched: ["Northbeam Testing", "Lumen Schools"],
+                    notes: ["Northbeam Testing: 2 match of 41 open roles.", "Lumen Schools: 1 match of 9 roles its search returned."],
+                    now: Date().addingTimeInterval(-1800))
+        m.data.found = found
         model = m
     }
+
+    static let sampleListings: [DiscoveredJob] = [
+        DiscoveredJob(id: "gh-1", title: "ELA Assessment Specialist", employer: "Northbeam Testing", location: "Remote - US",
+                      url: "https://boards.greenhouse.io/northbeam/jobs/1", source: "Greenhouse (Northbeam Testing)",
+                      posted: Date().addingTimeInterval(-3 * 86_400), descriptionHTML: SampleData.jobText.replacingOccurrences(of: "\n", with: "<br>"),
+                      remote: true, origin: "Northbeam Testing", board: .greenhouse),
+        DiscoveredJob(id: "gh-2", title: "Item Writer, Grades 3-5 Reading", employer: "Northbeam Testing", location: "Atlanta, GA",
+                      url: "https://boards.greenhouse.io/northbeam/jobs/2", source: "Greenhouse (Northbeam Testing)",
+                      posted: Date().addingTimeInterval(-9 * 86_400),
+                      descriptionHTML: "<h3>Responsibilities</h3><ul><li>Write reading items aligned to state standards</li><li>Revise items after content review</li></ul><h3>Requirements</h3><ul><li>Classroom teaching experience in grades 3-5</li><li>Experience writing assessment items</li><li>Experience with QTI authoring tools</li></ul>",
+                      origin: "Northbeam Testing", board: .greenhouse),
+        DiscoveredJob(id: "wd-lumen-/job/1", title: "Content Developer, ELA", employer: "Lumen Schools", location: "New York, NY",
+                      url: "https://lumen.wd5.myworkdayjobs.com/External/job/1", source: "Workday (Lumen Schools)", posted: nil,
+                      descriptionHTML: "<p>Build lessons.</p><h3>Qualifications</h3><ul><li>Instructional design certificate</li><li>Experience with Articulate Storyline</li><li>Spanish fluency</li></ul>",
+                      origin: "Lumen Schools", board: .workday),
+    ]
 
     private func snapshot<V: View>(_ view: V, name: String, size: CGSize = CGSize(width: 1280, height: 820)) {
         let root = view
@@ -192,7 +214,11 @@ final class UISnapshotTests: XCTestCase {
         model.selection = .profile
         snapshot(RootView(), name: "01-master-resume")
         model.selection = .jobs
+        model.jobsMode = .saved
         snapshot(RootView(), name: "02-jobs-overview")
+        model.jobsMode = .found
+        model.selectedListingID = model.visibleListings().first?.id
+        snapshot(RootView(), name: "02b-jobs-found", size: CGSize(width: 1280, height: 900))
         model.selection = .tracker
         snapshot(RootView(), name: "03-applications")
         model.selection = .discover
@@ -256,5 +282,38 @@ final class UISnapshotTests: XCTestCase {
         XCTAssertEqual(d.jobs.count, 3)
         XCTAssertEqual(d.job(jobID)?.status, .applied)
         XCTAssertNotNil(d.letter(d.job(jobID)?.coverLetterID))
+    }
+
+    func testFoundListingFlows() throws {
+        let visible = model.visibleListings()
+        XCTAssertEqual(visible.count, 3)
+        // Best covered first.
+        let scores = visible.map { model.fit(for: $0).score }
+        XCTAssertEqual(scores, scores.sorted(by: >))
+        XCTAssertEqual(visible.last?.id, "wd-lumen-/job/1", "\(visible.map { ($0.id, model.fit(for: $0).summary) })")
+        // Location filter applies to found listings too.
+        model.data.preferences.locations.options[2].selected = false // New York
+        XCTAssertFalse(model.visibleListings().contains { $0.id == "wd-lumen-/job/1" })
+        model.data.preferences.locations.options[2].selected = true
+        // Viewing marks it seen.
+        model.markViewed("gh-2")
+        XCTAssertTrue(model.listing("gh-2")?.viewed ?? false)
+        // Not interested: gone, and stays gone after the next search.
+        model.selectedListingID = "gh-2"
+        model.dismissListing("gh-2")
+        XCTAssertNil(model.listing("gh-2"))
+        XCTAssertNotNil(model.selectedListingID)
+        model.data.found.merge(Self.sampleListings, searched: ["Northbeam Testing"])
+        XCTAssertNil(model.listing("gh-2"))
+        // Saving moves it to Saved, parsed and ready to compare.
+        let before = model.data.jobs.count
+        model.saveListing("gh-1")
+        XCTAssertEqual(model.data.jobs.count, before + 1)
+        XCTAssertNil(model.listing("gh-1"))
+        XCTAssertEqual(model.jobsMode, .saved)
+        let saved = try XCTUnwrap(model.data.job(model.selectedJobID))
+        XCTAssertEqual(saved.title, "ELA Assessment Specialist")
+        XCTAssertFalse(saved.parsed.requiredQualifications.isEmpty)
+        snapshot(ListingDetailView(listingID: "wd-lumen-/job/1"), name: "14-listing", size: CGSize(width: 900, height: 900))
     }
 }

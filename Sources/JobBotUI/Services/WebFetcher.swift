@@ -39,6 +39,10 @@ enum WebFetcher {
     static func get(_ url: URL, accept: String) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.setValue(accept, forHTTPHeaderField: "Accept")
+        return try await send(request)
+    }
+
+    static func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw FetchError.unreadable }
@@ -68,7 +72,20 @@ enum WebFetcher {
     /// Fetches a public job-board feed.
     static func board(_ kind: BoardKind, token: String) async throws -> Data {
         guard let url = kind.listingURL(token: token) else { throw FetchError.unreadable }
-        let (data, http) = try await get(url, accept: "application/json")
+        return try await board(BoardRequest(url: url))
+    }
+
+    /// Sends one job-board request (a list, a search, or one posting) and returns the JSON.
+    static func board(_ request: BoardRequest) async throws -> Data {
+        let url = request.url
+        var r = URLRequest(url: url)
+        r.httpMethod = request.method
+        r.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body = request.body {
+            r.httpBody = body
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let (data, http) = try await send(r)
         switch http.statusCode {
         case 200..<300: return data
         case 404: throw FetchError.notFound

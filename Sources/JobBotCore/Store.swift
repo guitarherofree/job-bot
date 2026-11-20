@@ -14,6 +14,14 @@ public struct AppData: Codable, Equatable {
     public var examplePatterns: [ExamplePatterns]
     /// A record of every time data left this Mac (what, where, when).
     public var activity: [ActivityRecord]
+    /// Postings found on company job boards, shown in Jobs › Found (added in 1.0.3; optional so
+    /// older libraries still open).
+    public var foundListings: FoundListings?
+
+    public var found: FoundListings {
+        get { foundListings ?? FoundListings() }
+        set { foundListings = newValue }
+    }
 
     public init() {
         schemaVersion = 1
@@ -27,6 +35,7 @@ public struct AppData: Codable, Equatable {
         pivots = PivotSettings()
         examplePatterns = []
         activity = []
+        foundListings = FoundListings()
     }
 
     public func job(_ id: UUID?) -> Job? { id.flatMap { id in jobs.first { $0.id == id } } }

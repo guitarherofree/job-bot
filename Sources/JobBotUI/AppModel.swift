@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 import JobBotCore
 import JobBotRender
 
+enum JobsMode: String, CaseIterable, Identifiable {
+    case found, saved
+    var id: String { rawValue }
+}
+
 enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
     case profile, jobs, tracker, discover, pivots, credentials, examples, settings
 
@@ -113,11 +118,18 @@ public final class AppModel: ObservableObject {
     @Published var busy: String?
     @Published var importPreview: ImportPreview?
     @Published var jobDraft: JobDraft?
-    @Published var discovered: [DiscoveredJob] = []
-    @Published var discoveryLog: [String] = []
+    /// Jobs › Found or Jobs › Saved.
+    @Published var jobsMode: JobsMode = .found
+    @Published var selectedListingID: String?
+    /// Progress of a job-board search ("Checking Amplify (3 of 13)…").
+    @Published var listingStatus: String?
     @Published var aiQuestions: [UUID: [FollowUpQuestion]] = [:]
     @Published var showAddJob = false
     @Published var requestImport = false
+
+    /// Off in tests, so screenshots never reach the network.
+    var allowAutomaticBoardSearch = true
+    private var fitCache: (profile: Profile, fits: [String: Fit]) = (Profile(), [:])
 
     let store: DataStore
     let updates = UpdateManager()
@@ -144,6 +156,7 @@ public final class AppModel: ObservableObject {
             startupMessage = message + (saveAllowed ? " It was set aside as \(aside.lastPathComponent), and Job Bot started fresh." : " Job Bot won't save changes until this is resolved.")
         }
         let linksAdded = loaded.discovery.addDefaultCareerLinks()
+        let boardsConnected = loaded.discovery.connectDetectedBoards()
         store = dataStore
         data = loaded
         canSave = saveAllowed
@@ -154,7 +167,8 @@ public final class AppModel: ObservableObject {
             .debounce(for: .seconds(0.8), scheduler: RunLoop.main)
             .sink { [weak self] d in self?.persist(d) }
             .store(in: &cancellables)
-        if linksAdded > 0 { persist(data) }
+        if linksAdded > 0 || boardsConnected > 0 { persist(data) }
+        jobsMode = data.found.items.isEmpty && !data.jobs.isEmpty ? .saved : .found
     }
 
     /// Call once when the window appears.
@@ -163,6 +177,7 @@ public final class AppModel: ObservableObject {
         if data.preferences.checkForUpdates && updates.canInstall {
             Task { await updates.check(repository: data.preferences.updateRepository, automaticDownload: true) }
         }
+        Task { await searchBoardsIfDue() }
     }
 
     public func shutdown() {
@@ -653,37 +668,118 @@ public final class AppModel: ObservableObject {
 
     // MARK: - Discovery
 
-    func runDiscovery() async {
+    /// Searches every connected company job board and puts matching postings, fully read, in
+    /// Jobs › Found. Only requests for public job lists (and, for Workday sites, the search terms)
+    /// are sent; nothing about the person.
+    func runDiscovery(automatic: Bool = false) async {
+        guard listingStatus == nil else { return }
         guard data.preferences.publicJobBoards else {
-            alert = AlertInfo(title: "Job board searches are off", message: "Turn on public job board feeds in Privacy & Settings to search company boards from Job Bot.")
+            if !automatic {
+                alert = AlertInfo(title: "Job board searches are off", message: "Turn on public job board feeds in Privacy & Settings to search company boards from Job Bot.")
+            }
             return
         }
         let companies = data.discovery.companies.filter { $0.enabled && $0.board != .none && !$0.boardToken.trimmed.isEmpty }
         guard !companies.isEmpty else {
-            discoveryLog = ["No company has a job board connected yet. Use “Find board” next to a company, or paste a board link."]
+            data.found.notes = ["No company has a job board connected yet. Use “Find Board” next to a company in Find Jobs, or paste a board link as its careers page."]
             return
         }
-        busy = "Searching \(companies.count) job board\(companies.count == 1 ? "" : "s")…"
-        defer { busy = nil }
-        var found: [DiscoveredJob] = []
-        var notes: [String] = []
+        listingStatus = "Checking \(companies.count) job board\(companies.count == 1 ? "" : "s")…"
+        defer { listingStatus = nil }
         let terms = data.discovery.searchTerms + data.pivots.titles
-        for c in companies {
-            do {
-                let raw = try await WebFetcher.board(c.board, token: c.boardToken)
-                log(ActivityRecord(service: "\(c.board.title) (\(c.name))", purpose: "List open jobs", dataSent: "A request for the public job list only", bytes: 0))
-                let all = try Boards.parse(raw, kind: c.board, company: c.name)
-                let matching = Boards.filter(all, terms: terms, locations: data.preferences.locations)
-                found.append(contentsOf: matching)
-                notes.append("\(c.name): \(matching.count) of \(all.count) open roles match.")
-            } catch {
-                notes.append("\(c.name): \(error.localizedDescription)")
-            }
+        let outcome = await BoardSearch.run(companies: companies, terms: terms, locations: data.preferences.locations,
+                                            progress: { text in await MainActor.run { self.listingStatus = text } },
+                                            fetch: { request in try await WebFetcher.board(request) })
+        for c in companies where outcome.searched.contains(c.name) {
+            let sent = c.board == .workday ? "Your search terms only" : "A request for the public job list only"
+            log(ActivityRecord(service: "\(c.board.title) (\(c.name))", purpose: "List open jobs", dataSent: sent, bytes: 0))
         }
-        let savedURLs = Set(data.jobs.map { Duplicates.canonicalURL($0.url) })
-        discovered = found.filter { !savedURLs.contains(Duplicates.canonicalURL($0.url)) }
-            .sorted { ($0.posted ?? .distantPast) > ($1.posted ?? .distantPast) }
-        discoveryLog = notes
+        var found = data.found
+        let added = found.merge(outcome.jobs, searched: outcome.searched, notes: outcome.notes)
+        data.found = found
+        let failed = companies.count - outcome.searched.count
+        let problem = failed > 0 ? " \(failed) board\(failed == 1 ? "" : "s") couldn't be read; see Find Jobs for details." : ""
+        if added > 0 {
+            show("Found \(added) new listing\(added == 1 ? "" : "s") in Jobs.\(problem)", .success)
+        } else if !automatic {
+            show("No new listings since the last search.\(problem)", failed > 0 ? .warning : .info)
+        }
+    }
+
+    /// Searches the boards when the last search is more than six hours old.
+    func searchBoardsIfDue() async {
+        guard allowAutomaticBoardSearch, data.preferences.publicJobBoards, listingStatus == nil else { return }
+        if let last = data.found.lastSearch, Date().timeIntervalSince(last) < 6 * 3600 { return }
+        await runDiscovery(automatic: true)
+    }
+
+    /// How much of a listing the master resume covers (cached until the resume or listing changes).
+    func fit(for listing: FoundListing) -> Fit {
+        if fitCache.profile != data.master { fitCache = (data.master, [:]) }
+        let key = "\(listing.id)|\(listing.lastSeen.timeIntervalSince1970)"
+        if let f = fitCache.fits[key] { return f }
+        let f = Matcher.compare(profile: data.master, job: listing.job).fit
+        fitCache.fits[key] = f
+        return f
+    }
+
+    /// Found listings in the chosen locations that aren't saved yet, best covered first.
+    func visibleListings(search: String = "") -> [FoundListing] {
+        let q = search.trimmed.lowercased()
+        let locations = data.preferences.locations
+        let listings = data.found.items.filter { l in
+            let place = l.job.parsed.remote ? l.job.location + " Remote" : l.job.location
+            guard locations.accepts(locationText: place) else { return false }
+            guard Duplicates.match(for: l.job, in: data.jobs) == nil else { return false }
+            if q.isEmpty { return true }
+            return "\(l.job.title) \(l.job.employer) \(l.job.location)".lowercased().contains(q)
+        }
+        let scored = listings.map { ($0, fit(for: $0).score) }
+        return scored.sorted { a, b in
+            if abs(a.1 - b.1) > 0.001 { return a.1 > b.1 }
+            return (a.0.job.postedDate ?? a.0.firstSeen) > (b.0.job.postedDate ?? b.0.firstSeen)
+        }.map { $0.0 }
+    }
+
+    func listing(_ id: String?) -> FoundListing? {
+        guard let id else { return nil }
+        return data.found.items.first { $0.id == id }
+    }
+
+    /// Moves a found listing into the person's saved jobs and opens it.
+    func saveListing(_ id: String) {
+        guard let listing = listing(id) else { return }
+        if let dup = Duplicates.match(for: listing.job, in: data.jobs) {
+            _ = data.found.take(id)
+            jobsMode = .saved
+            selectedJobID = dup.id
+            show("Already saved as “\(dup.displayTitle)”.", .info)
+            return
+        }
+        _ = data.found.take(id)
+        var job = listing.job
+        job.status = .saved
+        job.updated = Date()
+        data.jobs.insert(job, at: 0)
+        selectedListingID = nil
+        jobsMode = .saved
+        selectedJobID = job.id
+        show("Saved “\(job.displayTitle)”. Compare it with your experience, tailor your resume and write a cover letter from here.", .success)
+    }
+
+    /// Hides a listing for good, and selects the next one.
+    func dismissListing(_ id: String) {
+        let visible = visibleListings()
+        let next: String? = visible.firstIndex { $0.id == id }.flatMap { i in
+            i + 1 < visible.count ? visible[i + 1].id : (i > 0 ? visible[i - 1].id : nil)
+        }
+        data.found.dismiss(id)
+        if selectedListingID == id { selectedListingID = next }
+    }
+
+    func markViewed(_ id: String) {
+        guard let i = data.found.items.firstIndex(where: { $0.id == id }), !data.found.items[i].viewed else { return }
+        data.found.items[i].viewed = true
     }
 
     func findBoard(for companyID: UUID) async {
@@ -720,17 +816,6 @@ public final class AppModel: ObservableObject {
             data.discovery.companies[i].board = kind
             data.discovery.companies[i].boardToken = token
         }
-    }
-
-    func save(discovered d: DiscoveredJob) {
-        let job = d.toJob()
-        if let dup = Duplicates.match(for: job, in: data.jobs) {
-            show("Already saved as “\(dup.displayTitle)”.", .warning)
-            return
-        }
-        data.jobs.insert(job, at: 0)
-        discovered.removeAll { $0.id == d.id }
-        show("Saved “\(job.displayTitle)” to Jobs.", .success)
     }
 
     func openSearch(_ site: SearchSite, term: String) {
@@ -799,7 +884,7 @@ public final class AppModel: ObservableObject {
         persistAfterReset()
         selectedJobID = nil
         selection = .profile
-        discovered = []
+        selectedListingID = nil
         show("All Job Bot data on this Mac was deleted.", .success)
     }
 

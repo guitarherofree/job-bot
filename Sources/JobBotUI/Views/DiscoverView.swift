@@ -85,7 +85,7 @@ struct SitesCard: View {
                 Spacer()
                 Button(editing ? "Done" : "Edit Sites") { editing.toggle() }.buttonStyle(.borderless)
             }
-            Text("These open in your browser with your search terms, so you browse them as yourself. When you find a role, copy its description into Jobs › Add Job.")
+            Text("These sites don't let apps read their listings, so they open in your browser with your search terms and you browse them as yourself. When you find a role, copy its description into Jobs › Add Job.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if editing {
                 ForEach(app.data.discovery.sites) { site in
@@ -126,6 +126,7 @@ struct ResultsCard: View {
     @EnvironmentObject var app: AppModel
 
     var body: some View {
+        let connected = app.data.discovery.companies.filter { $0.enabled && $0.board != .none }
         Card {
             HStack {
                 Text("Company job boards").font(.headline)
@@ -133,46 +134,32 @@ struct ResultsCard: View {
                 Button {
                     Task { await app.runDiscovery() }
                 } label: {
-                    Label("Search Connected Boards", systemImage: "arrow.clockwise")
+                    Label("Check for New Listings", systemImage: "arrow.clockwise")
                 }
-                .disabled(app.busy != nil)
+                .disabled(app.listingStatus != nil)
             }
-            Text("Searches public job-board feeds (Greenhouse, Lever, Ashby) for companies below that have one connected, filtered by your search terms and locations. Only a request for the job list is sent; nothing about you.")
+            Text("Job Bot reads the public job lists of \(connected.count) connected companies (Greenhouse, Lever, Ashby, SmartRecruiters, Workable and Workday sites), keeps titles that match your search terms in your locations, and reads each posting. Results appear in Jobs › Found, and the boards are checked again when the last check is more than six hours old. Only requests for job lists (and, for Workday sites, your search terms) are sent; nothing about you.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let busy = app.busy {
-                HStack { ProgressView().controlSize(.small); Text(busy).font(.callout) }
+            if let status = app.listingStatus {
+                HStack { ProgressView().controlSize(.small); Text(status).font(.callout) }
+            } else if let last = app.data.found.lastSearch {
+                HStack {
+                    Text("Last checked \(last.formatted(.relative(presentation: .named))): \(app.visibleListings().count) listings waiting.")
+                        .font(.callout)
+                    Button("Show in Jobs") {
+                        app.jobsMode = .found
+                        app.selection = .jobs
+                    }
+                }
             }
-            if !app.discoveryLog.isEmpty {
+            if !app.data.found.notes.isEmpty {
                 DisclosureGroup("Search details") {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(app.discoveryLog, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                        ForEach(app.data.found.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .font(.callout)
-            }
-            if !app.discovered.isEmpty {
-                HStack(spacing: 6) {
-                    Text("Filters:").font(.caption).foregroundStyle(.secondary)
-                    ForEach(app.data.preferences.locations.active) { loc in Pill(text: loc.name, color: Palette.accent) }
-                }
-                ForEach(app.discovered) { d in
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(d.title).font(.callout.weight(.semibold))
-                            Text([d.employer, d.location.isEmpty ? nil : d.location, d.posted.map { "updated \($0.shortDate)" }]
-                                .compactMap { $0 }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text("Source: \(d.source)").font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                        if let url = URL(string: d.url), !d.url.isEmpty {
-                            Link(destination: url) { Image(systemName: "safari") }.help("Open the original posting")
-                        }
-                        Button("Save") { app.save(discovered: d) }
-                    }
-                    Divider()
-                }
             }
         }
     }
@@ -223,7 +210,7 @@ struct CompanyRow: View {
             Text(company.name).frame(width: 190, alignment: .leading).lineLimit(1)
             TextField("Careers page link", text: $company.careersURL).textFieldStyle(.roundedBorder)
             if company.board != .none {
-                Pill(text: "\(company.board.title): \(company.boardToken)", color: Palette.strong, symbol: "dot.radiowaves.left.and.right")
+                Pill(text: "\(company.board.title): \(company.boardLabel)", color: Palette.strong, symbol: "dot.radiowaves.left.and.right")
                 Button { company.board = .none; company.boardToken = "" } label: { Image(systemName: "xmark.circle") }
                     .buttonStyle(.borderless)
                     .help("Disconnect this job board")

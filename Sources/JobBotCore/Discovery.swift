@@ -10,6 +10,13 @@ public enum BoardKind: String, Codable, CaseIterable, Identifiable {
     case lever
     /// Ashby's public Job Posting API (api.ashbyhq.com).
     case ashby
+    /// SmartRecruiters' public Posting API (api.smartrecruiters.com).
+    case smartrecruiters
+    /// Workable's public job widget feed (apply.workable.com).
+    case workable
+    /// A Workday careers site (*.myworkdayjobs.com), read through the same public job search
+    /// the site's own page uses. No sign-in.
+    case workday
 
     public var id: String { rawValue }
 
@@ -19,10 +26,26 @@ public enum BoardKind: String, Codable, CaseIterable, Identifiable {
         case .greenhouse: return "Greenhouse job board"
         case .lever: return "Lever job board"
         case .ashby: return "Ashby job board"
+        case .smartrecruiters: return "SmartRecruiters job board"
+        case .workable: return "Workable job board"
+        case .workday: return "Workday careers site"
         }
     }
 
-    /// The public listing endpoint for a board.
+    /// Short name used in listing sources ("Greenhouse").
+    public var shortName: String {
+        switch self {
+        case .none: return "Careers page"
+        case .greenhouse: return "Greenhouse"
+        case .lever: return "Lever"
+        case .ashby: return "Ashby"
+        case .smartrecruiters: return "SmartRecruiters"
+        case .workable: return "Workable"
+        case .workday: return "Workday"
+        }
+    }
+
+    /// The public listing endpoint for a board (the first page, for boards with several).
     public func listingURL(token: String) -> URL? {
         let t = token.trimmed.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? token
         switch self {
@@ -30,6 +53,9 @@ public enum BoardKind: String, Codable, CaseIterable, Identifiable {
         case .greenhouse: return URL(string: "https://boards-api.greenhouse.io/v1/boards/\(t)/jobs?content=true")
         case .lever: return URL(string: "https://api.lever.co/v0/postings/\(t)?mode=json")
         case .ashby: return URL(string: "https://api.ashbyhq.com/posting-api/job-board/\(t)?includeCompensation=true")
+        case .smartrecruiters: return URL(string: "https://api.smartrecruiters.com/v1/companies/\(t)/postings?limit=100&offset=0")
+        case .workable: return URL(string: "https://apply.workable.com/api/v1/widget/accounts/\(t)?details=true")
+        case .workday: return WorkdaySite(token: token)?.searchURL
         }
     }
 }
@@ -50,6 +76,12 @@ public struct CompanySource: Codable, Equatable, Hashable, Identifiable {
         self.board = board
         self.boardToken = boardToken
         self.enabled = enabled
+    }
+
+    /// The board name as shown to the person (a Workday site shows its address).
+    public var boardLabel: String {
+        if board == .workday, let site = WorkdaySite(token: boardToken) { return site.host.components(separatedBy: ".").first ?? site.host }
+        return boardToken
     }
 
     /// Guesses for the board name, tried in order by "Find job board" (each guess is checked
@@ -104,13 +136,17 @@ public struct DiscoverySettings: Codable, Equatable {
     public var sites: [SearchSite]
     /// Which set of built-in careers links has been added (nil in libraries made before 1.0.1).
     public var careerLinksVersion: Int?
+    /// Which set of job-board kinds has been connected from careers links (nil before 1.0.3).
+    public var boardLinksVersion: Int?
 
     public static let currentCareerLinksVersion = 1
+    public static let currentBoardLinksVersion = 2
 
     public init() {
         searchTerms = ["Assessment Specialist", "ELA Content Developer", "Item Writer"]
         companies = Self.defaultCompanies.map { Self.company(named: $0) }
         careerLinksVersion = Self.currentCareerLinksVersion
+        boardLinksVersion = Self.currentBoardLinksVersion
         sites = [
             SearchSite(name: "LinkedIn", template: "https://www.linkedin.com/jobs/search/?keywords={keywords}&location={location}"),
             SearchSite(name: "Indeed", template: "https://www.indeed.com/jobs?q={keywords}&l={location}"),
@@ -151,6 +187,23 @@ public struct DiscoverySettings: Codable, Equatable {
         }
         careerLinksVersion = Self.currentCareerLinksVersion
         return added
+    }
+
+    /// Connects job boards that can now be read from careers links already in the library
+    /// (SmartRecruiters, Workable and Workday were added in 1.0.3). Runs once; companies that
+    /// already have a board, or none detectable, are left alone. Returns how many it connected.
+    @discardableResult
+    public mutating func connectDetectedBoards() -> Int {
+        guard (boardLinksVersion ?? 0) < Self.currentBoardLinksVersion else { return 0 }
+        var connected = 0
+        for i in companies.indices where companies[i].board == .none {
+            guard let board = Boards.detect(fromURL: companies[i].careersURL) else { continue }
+            companies[i].board = board.0
+            companies[i].boardToken = board.1
+            connected += 1
+        }
+        boardLinksVersion = Self.currentBoardLinksVersion
+        return connected
     }
 
     /// Careers pages for the default company list (collected November 2026).
@@ -222,9 +275,16 @@ public struct DiscoveredJob: Equatable, Hashable, Identifiable {
     public var descriptionHTML: String
     public var salary: SalaryInfo?
     public var remote: Bool
+    /// Where the full posting is read from, for boards whose list leaves out the description.
+    public var detailURL: String?
+    /// The company in the person's list this came from (the employer can differ, for example
+    /// when two companies share one board).
+    public var origin: String
+    public var board: BoardKind
 
     public init(id: String, title: String, employer: String, location: String, url: String, source: String, posted: Date?,
-                descriptionHTML: String, salary: SalaryInfo? = nil, remote: Bool = false) {
+                descriptionHTML: String, salary: SalaryInfo? = nil, remote: Bool = false, detailURL: String? = nil,
+                origin: String? = nil, board: BoardKind = .none) {
         self.id = id
         self.title = title
         self.employer = employer
@@ -235,6 +295,9 @@ public struct DiscoveredJob: Equatable, Hashable, Identifiable {
         self.descriptionHTML = descriptionHTML
         self.salary = salary
         self.remote = remote
+        self.detailURL = detailURL
+        self.origin = origin ?? employer
+        self.board = board
     }
 
     public func toJob(now: Date = Date()) -> Job {
@@ -265,14 +328,37 @@ public enum Boards {
         }
         if host == "jobs.lever.co", let first = parts.first { return (.lever, first) }
         if host == "jobs.ashbyhq.com", let first = parts.first { return (.ashby, first) }
+        if host == "careers.smartrecruiters.com" || host == "jobs.smartrecruiters.com", let first = parts.first {
+            return (.smartrecruiters, first)
+        }
+        if host == "apply.workable.com", let first = parts.first, first != "j", first != "api" { return (.workable, first) }
+        if host.hasSuffix(".myworkdayjobs.com") {
+            // Skip a locale segment ("en-US") and anything after the site name ("/job/...").
+            let site = parts.first(where: { p in
+                !(p.count == 5 && p.dropFirst(2).first == "-" && p.prefix(2).allSatisfy(\.isLowercase))
+            })
+            if let site, site != "wday" { return (.workday, "\(host)/\(site)") }
+        }
         return nil
     }
 
-    public static func parse(_ data: Data, kind: BoardKind, company: String, now: Date = Date()) throws -> [DiscoveredJob] {
+    public static func parse(_ data: Data, kind: BoardKind, company: String, token: String = "", now: Date = Date()) throws -> [DiscoveredJob] {
         let obj = try JSONSerialization.jsonObject(with: data)
+        let jobs = try parseObject(obj, kind: kind, company: company, token: token, now: now)
+        return jobs.map { j in
+            var j = j
+            j.board = kind
+            j.origin = company
+            return j
+        }
+    }
+
+    static func parseObject(_ obj: Any, kind: BoardKind, company: String, token: String, now: Date) throws -> [DiscoveredJob] {
         switch kind {
         case .none:
             return []
+        case .smartrecruiters, .workable, .workday:
+            return ListingFeeds.parse(obj, kind: kind, company: company, token: token, now: now)
         case .greenhouse:
             guard let dict = obj as? [String: Any], let jobs = dict["jobs"] as? [[String: Any]] else { return [] }
             return jobs.map { j in
@@ -326,15 +412,19 @@ public enum Boards {
         }
     }
 
-    /// Keeps postings whose title (or, failing that, description) mentions a search term.
+    /// Keeps postings in the chosen locations whose title matches a search term.
     public static func filter(_ jobs: [DiscoveredJob], terms: [String], locations: LocationFilter) -> [DiscoveredJob] {
+        matchingTitles(jobs, terms: terms).filter { locations.accepts(locationText: $0.locationForFiltering) }
+    }
+
+    /// Keeps postings whose title matches a search term: all of its words, or two-thirds of
+    /// them ("Assessment Content Specialist" matches "Assessment Specialist").
+    public static func matchingTitles(_ jobs: [DiscoveredJob], terms: [String]) -> [DiscoveredJob] {
         let termWords = terms.map { TextTools.terms($0) }.filter { !$0.isEmpty }
+        guard !termWords.isEmpty else { return jobs }
         return jobs.filter { j in
-            guard locations.accepts(locationText: j.locationForFiltering) else { return false }
-            if termWords.isEmpty { return true }
             let titleTerms = TextTools.terms(j.title)
             if termWords.contains(where: { $0.isSubset(of: titleTerms) }) { return true }
-            // Two-thirds of a term's words in the title also counts ("Assessment Content Specialist").
             return termWords.contains { t in Double(t.intersection(titleTerms).count) / Double(t.count) >= 0.66 }
         }
     }

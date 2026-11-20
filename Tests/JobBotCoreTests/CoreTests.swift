@@ -376,7 +376,14 @@ final class SettingsLogicTests: XCTestCase {
         XCTAssertEqual(company("CommonLit")?.board, .lever)
         XCTAssertEqual(company("CommonLit")?.boardToken, "commonlit")
         XCTAssertEqual(company("Pearson")?.board, BoardKind.none)
-        XCTAssertEqual(d.companies.filter { $0.board != .none }.count, 4)
+        XCTAssertEqual(company("Renaissance")?.board, .smartrecruiters)
+        XCTAssertEqual(company("Renaissance")?.boardToken, "Renaissance")
+        XCTAssertEqual(company("Riverside Insights")?.board, .workable)
+        XCTAssertEqual(company("Riverside Insights")?.boardToken, "riverside-insights")
+        XCTAssertEqual(company("College Board")?.board, .workday)
+        XCTAssertEqual(company("College Board")?.boardToken, "collegeboard.wd1.myworkdayjobs.com/Careers")
+        XCTAssertEqual(company("Kaplan")?.boardToken, "ghc.wd1.myworkdayjobs.com/Kaplan_Careers")
+        XCTAssertEqual(d.companies.filter { $0.board != .none }.count, 13)
 
         // Older libraries get the links once; links someone entered are kept.
         var old = DiscoverySettings()
@@ -507,5 +514,273 @@ final class SettingsLogicTests: XCTestCase {
         XCTAssertFalse(req.user.contains("jordan.rivera@example.com"))
         XCTAssertFalse(req.user.contains("555-0142"))
         XCTAssertFalse(req.user.contains("Jordan Rivera"))
+    }
+}
+
+
+final class ListingTests: XCTestCase {
+    func testNewBoardDetection() {
+        XCTAssertEqual(Boards.detect(fromURL: "https://careers.smartrecruiters.com/Renaissance")?.0, .smartrecruiters)
+        XCTAssertEqual(Boards.detect(fromURL: "https://jobs.smartrecruiters.com/Acme/123-editor")?.1, "Acme")
+        XCTAssertEqual(Boards.detect(fromURL: "https://apply.workable.com/riverside-insights/")?.1, "riverside-insights")
+        XCTAssertNil(Boards.detect(fromURL: "https://apply.workable.com/j/ABC123"))
+        XCTAssertEqual(Boards.detect(fromURL: "https://amplify.wd1.myworkdayjobs.com/Amplify_Careers")?.1, "amplify.wd1.myworkdayjobs.com/Amplify_Careers")
+        XCTAssertEqual(Boards.detect(fromURL: "https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/Remote/Editor_R1")?.1, "collegeboard.wd1.myworkdayjobs.com/Careers")
+        let site = WorkdaySite(token: "ghc.wd1.myworkdayjobs.com/Kaplan_Careers")
+        XCTAssertEqual(site?.tenant, "ghc")
+        XCTAssertEqual(site?.searchURL?.absoluteString, "https://ghc.wd1.myworkdayjobs.com/wday/cxs/ghc/Kaplan_Careers/jobs")
+        XCTAssertEqual(site?.publicURL(externalPath: "/job/Remote/Item-Writer_R9"), "https://ghc.wd1.myworkdayjobs.com/Kaplan_Careers/job/Remote/Item-Writer_R9")
+        var c = CompanySource(name: "Kaplan", board: .workday, boardToken: "ghc.wd1.myworkdayjobs.com/Kaplan_Careers")
+        XCTAssertEqual(c.boardLabel, "ghc")
+        c.board = .lever
+        c.boardToken = "acme"
+        XCTAssertEqual(c.boardLabel, "acme")
+    }
+
+    func testWorkdayRequestsSearchEachTerm() throws {
+        let reqs = BoardKind.workday.listingRequests(token: "amplify.wd1.myworkdayjobs.com/Amplify_Careers",
+                                                     terms: ["Item Writer", "item writer", "ELA Content Developer"])
+        XCTAssertEqual(reqs.count, 2)
+        XCTAssertEqual(reqs[0].method, "POST")
+        let body = try XCTUnwrap(reqs[0].body)
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["searchText"] as? String, "Item Writer")
+        XCTAssertEqual(obj["limit"] as? Int, 20)
+        XCTAssertEqual(BoardKind.greenhouse.listingRequests(token: "acme", terms: ["x"]).count, 1)
+    }
+
+    func testSmartRecruitersParsing() throws {
+        let list = """
+        {"offset":0,"limit":100,"totalFound":230,"content":[
+          {"id":"744000099","name":"Assessment Specialist, ELA","releasedDate":"2026-11-12T15:00:00.000Z","company":{"identifier":"Renaissance","name":"Renaissance Learning"},
+           "location":{"city":"Wisconsin Rapids","region":"WI","country":"us","remote":true},"ref":"https://api.smartrecruiters.com/v1/companies/Renaissance/postings/744000099"},
+          {"id":"744000100","name":"Senior Software Engineer","company":{"name":"Renaissance Learning"},"location":{"city":"Minneapolis","region":"MN","country":"us","remote":false}}]}
+        """
+        let jobs = try Boards.parse(Data(list.utf8), kind: .smartrecruiters, company: "Renaissance", token: "Renaissance")
+        XCTAssertEqual(jobs.count, 2)
+        XCTAssertEqual(jobs[0].id, "sr-744000099")
+        XCTAssertEqual(jobs[0].employer, "Renaissance Learning")
+        XCTAssertEqual(jobs[0].origin, "Renaissance")
+        XCTAssertTrue(jobs[0].remote)
+        XCTAssertTrue(jobs[0].location.hasPrefix("Remote"))
+        XCTAssertEqual(jobs[0].detailURL, "https://api.smartrecruiters.com/v1/companies/Renaissance/postings/744000099")
+        XCTAssertEqual(jobs[1].detailURL, "https://api.smartrecruiters.com/v1/companies/Renaissance/postings/744000100")
+
+        let first = BoardRequest(url: URL(string: "https://api.smartrecruiters.com/v1/companies/Renaissance/postings?limit=100&offset=0")!)
+        let next = Boards.nextPage(after: Data(list.utf8), request: first, kind: .smartrecruiters)
+        XCTAssertEqual(next?.url.absoluteString, "https://api.smartrecruiters.com/v1/companies/Renaissance/postings?limit=100&offset=100")
+        let last = BoardRequest(url: URL(string: "https://api.smartrecruiters.com/v1/companies/Renaissance/postings?limit=100&offset=200")!)
+        XCTAssertNil(Boards.nextPage(after: Data(list.utf8), request: last, kind: .smartrecruiters))
+
+        let detail = """
+        {"id":"744000099","postingUrl":"https://jobs.smartrecruiters.com/Renaissance/744000099-assessment-specialist-ela",
+         "jobAd":{"sections":{"companyDescription":{"title":"Company Description","text":"<p>We make software.</p>"},
+          "jobDescription":{"title":"Job Description","text":"<ul><li>Write and review ELA items aligned to standards</li><li>Lead bias and sensitivity reviews</li></ul>"},
+          "qualifications":{"title":"Qualifications","text":"<ul><li>3+ years of K-12 assessment development</li><li>Bachelor's degree</li></ul>"}}}}
+        """
+        var job = jobs[0]
+        try Boards.applyDetail(Data(detail.utf8), to: &job)
+        XCTAssertEqual(job.url, "https://jobs.smartrecruiters.com/Renaissance/744000099-assessment-specialist-ela")
+        XCTAssertFalse(job.descriptionHTML.contains("We make software"), "the company blurb is left out")
+        let parsed = job.toJob().parsed
+        XCTAssertFalse(parsed.requiredQualifications.isEmpty || parsed.responsibilities.isEmpty, "\(parsed)")
+    }
+
+    func testWorkableParsing() throws {
+        let feed = """
+        {"name":"Riverside Insights","jobs":[
+          {"title":"Content Developer, ELA","shortcode":"AB12CD","url":"https://apply.workable.com/j/AB12CD","published_on":"2026-11-03","telecommuting":true,
+           "city":"Itasca","state":"Illinois","country":"United States","description":"<p>Develop reading items.</p>","requirements":"<ul><li>ELA teaching experience</li></ul>"},
+          {"title":"Item Writer","shortcode":"ZZ99","city":"","state":"","country":"","locations":[{"city":"Atlanta","region":"Georgia","country":"United States"}]}]}
+        """
+        let jobs = try Boards.parse(Data(feed.utf8), kind: .workable, company: "Riverside Insights", token: "riverside-insights")
+        XCTAssertEqual(jobs.map(\.id), ["wk-AB12CD", "wk-ZZ99"])
+        XCTAssertTrue(jobs[0].remote)
+        XCTAssertTrue(jobs[0].descriptionHTML.contains("Requirements"))
+        XCTAssertNil(jobs[0].detailURL)
+        XCTAssertEqual(jobs[1].location, "Atlanta, Georgia, United States")
+        XCTAssertEqual(jobs[1].detailURL, "https://apply.workable.com/api/v2/accounts/riverside-insights/jobs/ZZ99")
+        XCTAssertNotNil(jobs[0].posted)
+        var second = jobs[1]
+        try Boards.applyDetail(Data(#"{"description":"<p>Write items.</p>","requirements":"<p>Teaching</p>"}"#.utf8), to: &second)
+        XCTAssertTrue(second.descriptionHTML.contains("Write items"))
+    }
+
+    func testWorkdayParsing() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let search = """
+        {"total":2,"jobPostings":[
+          {"title":"Assessment Specialist - Reading","externalPath":"/job/Remote-USA/Assessment-Specialist---Reading_R1001","locationsText":"Remote - USA","postedOn":"Posted 3 Days Ago","bulletFields":["R1001"]},
+          {"title":"Item Writer (Contract)","externalPath":"/job/New-York/Item-Writer_R1002","locationsText":"2 Locations","postedOn":"Posted Today"}]}
+        """
+        let token = "amplify.wd1.myworkdayjobs.com/Amplify_Careers"
+        let jobs = try Boards.parse(Data(search.utf8), kind: .workday, company: "Amplify", token: token, now: now)
+        XCTAssertEqual(jobs.count, 2)
+        XCTAssertEqual(jobs[0].url, "https://amplify.wd1.myworkdayjobs.com/Amplify_Careers/job/Remote-USA/Assessment-Specialist---Reading_R1001")
+        XCTAssertEqual(jobs[0].detailURL, "https://amplify.wd1.myworkdayjobs.com/wday/cxs/amplify/Amplify_Careers/job/Remote-USA/Assessment-Specialist---Reading_R1001")
+        XCTAssertTrue(jobs[0].remote)
+        XCTAssertEqual(jobs[0].posted, now.addingTimeInterval(-3 * 86_400))
+        XCTAssertEqual(jobs[1].location, "", "“2 Locations” waits for the posting")
+        XCTAssertEqual(jobs[1].posted, now)
+        XCTAssertEqual(jobs[1].board, .workday)
+
+        let detail = """
+        {"jobPostingInfo":{"title":"Item Writer (Contract)","jobDescription":"<p><b>What you'll do</b></p><ul><li>Write items</li></ul>",
+          "location":"New York, NY","additionalLocations":["Remote - USA"],"startDate":"2026-11-02","timeType":"Part time",
+          "externalUrl":"https://amplify.wd1.myworkdayjobs.com/en-US/Amplify_Careers/job/New-York/Item-Writer_R1002"},
+         "hiringOrganization":{"name":"Amplify Education"}}
+        """
+        var job = jobs[1]
+        try Boards.applyDetail(Data(detail.utf8), to: &job)
+        XCTAssertEqual(job.location, "New York, NY, Remote - USA")
+        XCTAssertTrue(job.remote)
+        XCTAssertTrue(job.descriptionHTML.contains("Write items"))
+        XCTAssertEqual(job.url, "https://amplify.wd1.myworkdayjobs.com/en-US/Amplify_Careers/job/New-York/Item-Writer_R1002")
+        XCTAssertEqual(job.posted, HTMLText.parseDate("2026-11-02"))
+    }
+
+    func testSearchRunsEveryBoardAndReadsPostings() async throws {
+        let gh = CompanySource(name: "Acme", board: .greenhouse, boardToken: "acme")
+        let wd = CompanySource(name: "Beta", board: .workday, boardToken: "beta.wd5.myworkdayjobs.com/External")
+        let broken = CompanySource(name: "Gamma", board: .lever, boardToken: "gamma")
+        let off = CompanySource(name: "Delta", board: .ashby, boardToken: "delta", enabled: false)
+        let ghList = """
+        {"jobs":[{"id":1,"title":"Assessment Specialist","absolute_url":"https://boards.greenhouse.io/acme/jobs/1","location":{"name":"Remote"},"content":"<p>Write items</p>"},
+                 {"id":2,"title":"Assessment Specialist","absolute_url":"https://boards.greenhouse.io/acme/jobs/2","location":{"name":"Chicago, IL"},"content":"<p>x</p>"},
+                 {"id":3,"title":"Accountant","absolute_url":"https://boards.greenhouse.io/acme/jobs/3","location":{"name":"Remote"},"content":""}]}
+        """
+        let wdList = """
+        {"total":1,"jobPostings":[{"title":"Item Writer","externalPath":"/job/x/Item-Writer_R5","locationsText":"3 Locations","postedOn":"Posted Yesterday"}]}
+        """
+        let wdDetail = """
+        {"jobPostingInfo":{"jobDescription":"<p>Write ELA items.</p>","location":"Atlanta, GA"}}
+        """
+        var requested: [String] = []
+        let outcome = await BoardSearch.run(companies: [gh, wd, broken, off], terms: ["Assessment Specialist", "Item Writer"],
+                                            locations: LocationFilter()) { request in
+            requested.append("\(request.method) \(request.url.absoluteString)")
+            switch request.url.host ?? "" {
+            case "boards-api.greenhouse.io": return Data(ghList.utf8)
+            case "beta.wd5.myworkdayjobs.com": return Data((request.method == "POST" ? wdList : wdDetail).utf8)
+            default: throw URLError(.notConnectedToInternet)
+            }
+        }
+        XCTAssertEqual(outcome.searched, ["Acme", "Beta"])
+        XCTAssertEqual(Set(outcome.jobs.map(\.id)), ["gh-1", "wd-beta-/job/x/Item-Writer_R5"])
+        let item = try XCTUnwrap(outcome.jobs.first { $0.board == .workday })
+        XCTAssertEqual(item.location, "Atlanta, GA")
+        XCTAssertTrue(item.descriptionHTML.contains("Write ELA items"))
+        XCTAssertEqual(requested.filter { $0.hasPrefix("POST") }.count, 2, "one Workday search per term")
+        XCTAssertFalse(requested.contains { $0.contains("delta") }, "turned-off companies aren't searched")
+        XCTAssertTrue(outcome.notes.contains { $0.hasPrefix("Gamma:") })
+        XCTAssertTrue(outcome.notes.contains("Acme: 1 match of 3 open roles."), "\(outcome.notes)")
+    }
+
+    func testFoundListingsMerge() {
+        func d(_ id: String, _ company: String, _ title: String = "Item Writer") -> DiscoveredJob {
+            DiscoveredJob(id: id, title: title, employer: company, location: "Remote", url: "https://example.com/\(id)", source: "Test",
+                          posted: nil, descriptionHTML: "<p>Write items.</p>", origin: company)
+        }
+        var found = FoundListings()
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(found.merge([d("a", "Acme"), d("b", "Acme"), d("c", "Beta")], searched: ["Acme", "Beta"], now: t0), 3)
+        XCTAssertEqual(found.unviewedCount, 3)
+        let idOfA = found.items.first { $0.id == "a" }!.job.id
+        found.items[0].viewed = true
+        found.dismiss("b")
+        // Next search: "a" again, "b" again (dismissed), "c" missing but Beta couldn't be read, "d" new.
+        let t1 = t0.addingTimeInterval(3600)
+        XCTAssertEqual(found.merge([d("a", "Acme", "Item Writer II"), d("b", "Acme"), d("d", "Acme")], searched: ["Acme"], now: t1), 1)
+        XCTAssertEqual(Set(found.items.map(\.id)), ["a", "c", "d"])
+        let a = found.items.first { $0.id == "a" }!
+        XCTAssertEqual(a.job.id, idOfA, "a listing keeps its identity")
+        XCTAssertEqual(a.job.title, "Item Writer II")
+        XCTAssertTrue(a.viewed)
+        XCTAssertEqual(a.firstSeen, t0)
+        XCTAssertEqual(a.lastSeen, t1)
+        // Beta read again without "c": it's gone.
+        found.merge([d("a", "Acme"), d("d", "Acme")], searched: ["Acme", "Beta"], now: t1)
+        XCTAssertEqual(Set(found.items.map(\.id)), ["a", "d"])
+        XCTAssertEqual(found.take("d")?.id, "d")
+        XCTAssertNil(found.take("d"))
+        XCTAssertEqual(found.lastSearch, t1)
+    }
+
+    func testConnectingBoardsInOlderLibraries() {
+        var old = DiscoverySettings()
+        old.boardLinksVersion = nil
+        for i in old.companies.indices where ![BoardKind.greenhouse, .lever, .ashby].contains(old.companies[i].board) {
+            old.companies[i].board = .none
+            old.companies[i].boardToken = ""
+        }
+        old.companies[0].careersURL = "https://jobs.lever.co/my-own-board"
+        old.companies[0].board = .lever
+        old.companies[0].boardToken = "my-own-board"
+        XCTAssertEqual(old.connectDetectedBoards(), 9)
+        XCTAssertEqual(old.companies.filter { $0.board != .none }.count, 14)
+        XCTAssertEqual(old.companies[0].boardToken, "my-own-board")
+        XCTAssertEqual(old.connectDetectedBoards(), 0, "runs once")
+    }
+
+    func testOlderLibraryWithoutListingsStillOpens() throws {
+        var data = AppData()
+        data.found.items = []
+        let encoded = try DataStore.encoder.encode(data)
+        var obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        obj.removeValue(forKey: "foundListings")
+        var discovery = try XCTUnwrap(obj["discovery"] as? [String: Any])
+        discovery.removeValue(forKey: "boardLinksVersion")
+        obj["discovery"] = discovery
+        let old = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try DataStore.decoder.decode(AppData.self, from: old)
+        XCTAssertNil(decoded.foundListings)
+        XCTAssertTrue(decoded.found.items.isEmpty)
+        XCTAssertNil(decoded.discovery.boardLinksVersion)
+    }
+
+    func testFit() {
+        let job = SampleData.job()
+        let report = Matcher.compare(profile: SampleData.profile, job: job)
+        let fit = report.fit
+        XCTAssertGreaterThan(fit.requiredTotal, 0)
+        XCTAssertLessThanOrEqual(fit.requiredCovered, fit.requiredTotal)
+        XCTAssertTrue(fit.summary.hasPrefix("Covers \(fit.requiredCovered) of \(fit.requiredTotal)"))
+        XCTAssertNotEqual(fit.level, .unknown)
+        XCTAssertEqual(Fit(requiredCovered: 0, requiredTotal: 0, keywordsMatched: 0, keywordsTotal: 0).level, .unknown)
+        XCTAssertEqual(Fit(requiredCovered: 4, requiredTotal: 4, keywordsMatched: 8, keywordsTotal: 10).level, .strong)
+        XCTAssertEqual(Fit(requiredCovered: 1, requiredTotal: 4, keywordsMatched: 1, keywordsTotal: 10).level, .low)
+        XCTAssertFalse(WritingRules.containsEmDash(fit.summary))
+    }
+
+    /// Reads the real boards. Runs only with JOBBOT_LIVE=1 (the build check does this in a
+    /// separate step, so a board being down never fails the build).
+    func testLiveBoards() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["JOBBOT_LIVE"] == "1", "live check off")
+        let settings = DiscoverySettings()
+        var all = LocationFilter()
+        all.setAll(true)
+        let terms = settings.searchTerms + ["Editor", "Content", "Assessment", "Curriculum", "Writer", "Specialist"]
+        let session = URLSession(configuration: .ephemeral)
+        let outcome = await BoardSearch.run(companies: settings.companies, terms: terms, locations: all, detailLimit: 40) { request in
+            var r = URLRequest(url: request.url)
+            r.httpMethod = request.method
+            r.httpBody = request.body
+            r.setValue("application/json", forHTTPHeaderField: "Accept")
+            r.setValue("JobBot/1.0 (Macintosh; personal job search app)", forHTTPHeaderField: "User-Agent")
+            if request.body != nil { r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+            let (data, response) = try await session.data(for: r)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(code) else {
+                throw NSError(domain: "live", code: code, userInfo: [NSLocalizedDescriptionKey: "HTTP \(code) from \(request.url.host ?? "")"])
+            }
+            return data
+        }
+        print("LIVE requests: \(outcome.requests)")
+        for note in outcome.notes { print("LIVE note: \(note)") }
+        for job in outcome.jobs.prefix(60) {
+            let parsed = job.toJob().parsed
+            print("LIVE job: [\(job.board.shortName)] \(job.title) | \(job.employer) | \(job.location) | remote=\(job.remote) | posted=\(job.posted.map { "\($0)" } ?? "-") | desc=\(job.descriptionHTML.count) | resp=\(parsed.responsibilities.count) req=\(parsed.requiredQualifications.count) pref=\(parsed.preferredQualifications.count) | \(job.url)")
+        }
+        XCTAssertFalse(outcome.searched.isEmpty)
     }
 }

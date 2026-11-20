@@ -37,7 +37,7 @@ public struct RootView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if let busy = app.busy {
+            if let busy = app.busy ?? app.listingStatus {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text(busy).font(.callout)
@@ -74,8 +74,7 @@ public struct RootView: View {
 
     private func badge(_ item: SidebarItem) -> Int {
         switch item {
-        case .jobs: return app.data.jobs.filter { $0.status.isActive }.count
-        case .discover: return app.discovered.count
+        case .jobs: return app.visibleListings().filter { !$0.viewed }.count
         default: return 0
         }
     }

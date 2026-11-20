@@ -33,6 +33,15 @@ jobs:
           JOBBOT_PREVIEWS: ${{ github.workspace }}/previews
         run: swift test 2>&1 | tee test.log
 
+      - name: Live job-board check
+        # Reads the real company boards with the app's search code and prints what it found.
+        # Informational only: a board being down never fails the build.
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          JOBBOT_LIVE: "1"
+        run: swift test --filter ListingTests/testLiveBoards 2>&1 | grep -E "LIVE|error:|Executed|failed|passed" | head -250
+
       - name: Print previews into the log
         if: always()
         run: |

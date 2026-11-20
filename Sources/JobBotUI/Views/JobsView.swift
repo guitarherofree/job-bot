@@ -11,22 +11,35 @@ struct JobsView: View {
         HSplitView {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 8) {
-                    TextField("Search saved jobs", text: $search).textFieldStyle(.roundedBorder)
-                    HStack {
-                        Toggle("Filter by location", isOn: $filterByLocation).toggleStyle(.checkbox)
-                        Spacer()
-                        Toggle("Closed", isOn: $showInactive).toggleStyle(.checkbox).help("Show jobs marked not selected, withdrawn or archived")
+                    Picker("", selection: $app.jobsMode) {
+                        Text("Found (\(app.visibleListings().count))").tag(JobsMode.found)
+                        Text("Saved (\(app.data.jobs.count))").tag(JobsMode.saved)
                     }
-                    .font(.callout)
-                    if filterByLocation {
-                        ActiveLocationChips()
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    TextField(app.jobsMode == .found ? "Search found listings" : "Search saved jobs", text: $search)
+                        .textFieldStyle(.roundedBorder)
+                    if app.jobsMode == .found {
+                        FoundStatusLine()
+                    } else {
+                        HStack {
+                            Toggle("Filter by location", isOn: $filterByLocation).toggleStyle(.checkbox)
+                            Spacer()
+                            Toggle("Closed", isOn: $showInactive).toggleStyle(.checkbox).help("Show jobs marked not selected, withdrawn or archived")
+                        }
+                        .font(.callout)
+                        if filterByLocation {
+                            ActiveLocationChips()
+                        }
                     }
                 }
                 .padding(10)
                 Divider()
-                if app.data.jobs.isEmpty {
+                if app.jobsMode == .found {
+                    FoundList(search: search)
+                } else if app.data.jobs.isEmpty {
                     EmptyState(symbol: "briefcase", title: "No saved jobs",
-                               message: "Add a job by pasting its link or its description.",
+                               message: "Save a listing from Found, or add a job by pasting its link or its description.",
                                actionTitle: "Add Job…") { app.showAddJob = true }
                 } else {
                     List(selection: $app.selectedJobID) {
@@ -40,13 +53,23 @@ struct JobsView: View {
                     }
                 }
             }
-            .frame(minWidth: 280, idealWidth: 320, maxWidth: 420)
+            .frame(minWidth: 300, idealWidth: 340, maxWidth: 440)
 
             Group {
-                if let id = app.selectedJobID, app.data.job(id) != nil {
-                    JobDetailView(jobID: id).id(id)
-                } else {
-                    EmptyState(symbol: "sidebar.left", title: "Select a job", message: "Pick a saved job to compare it with your experience and prepare your materials.")
+                switch app.jobsMode {
+                case .found:
+                    if let id = app.selectedListingID, app.listing(id) != nil {
+                        ListingDetailView(listingID: id).id(id)
+                    } else {
+                        EmptyState(symbol: "doc.text.magnifyingglass", title: "Select a listing",
+                                   message: "Each listing is read into responsibilities, qualifications and pay, and compared with your master resume. Save the ones you want to work on.")
+                    }
+                case .saved:
+                    if let id = app.selectedJobID, app.data.job(id) != nil {
+                        JobDetailView(jobID: id).id(id)
+                    } else {
+                        EmptyState(symbol: "sidebar.left", title: "Select a job", message: "Pick a saved job to compare it with your experience and prepare your materials.")
+                    }
                 }
             }
             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
@@ -54,11 +77,21 @@ struct JobsView: View {
         .navigationTitle("Jobs")
         .toolbar {
             ToolbarItem {
+                Button { Task { await app.runDiscovery() } } label: { Label("Check for New Listings", systemImage: "arrow.clockwise") }
+                    .disabled(app.listingStatus != nil)
+                    .help("Search your connected company job boards now")
+            }
+            ToolbarItem {
                 Button { app.showAddJob = true } label: { Label("Add Job", systemImage: "plus") }
                     .help("Add a job by link or by pasting its description")
             }
         }
         .sheet(isPresented: $app.showAddJob) { AddJobSheet().environmentObject(app) }
+        .task { await app.searchBoardsIfDue() }
+        .onChange(of: app.selectedListingID) { _, id in
+            if let id { app.markViewed(id) }
+        }
+        .onChange(of: app.jobsMode) { _, _ in search = "" }
     }
 
     private var filtered: [Job] {
@@ -68,6 +101,233 @@ struct JobsView: View {
             let q = search.trimmed.lowercased()
             if q.isEmpty { return true }
             return "\(job.title) \(job.employer) \(job.location) \(job.notes)".lowercased().contains(q)
+        }
+    }
+}
+
+// MARK: - Found listings
+
+/// When the boards were last checked, and what's being searched for.
+struct FoundStatusLine: View {
+    @EnvironmentObject var app: AppModel
+
+    var body: some View {
+        let boards = app.data.discovery.companies.filter { $0.enabled && $0.board != .none }.count
+        let terms = app.data.discovery.searchTerms + app.data.pivots.titles
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                if let status = app.listingStatus {
+                    ProgressView().controlSize(.mini)
+                    Text(status).lineLimit(1)
+                } else if let last = app.data.found.lastSearch {
+                    Image(systemName: "clock")
+                    Text("\(boards) company boards checked \(last.formatted(.relative(presentation: .named)))").lineLimit(1)
+                } else {
+                    Image(systemName: "clock")
+                    Text("\(boards) company boards connected, not checked yet").lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button("Edit Search") { app.selection = .discover }
+                    .buttonStyle(.link)
+                    .help("Change search terms, locations and companies in Find Jobs")
+            }
+            Text("Titles matching: " + (terms.isEmpty ? "any" : terms.joined(separator: ", ")) + " · " + app.data.preferences.locations.summary)
+                .lineLimit(2)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+struct FoundList: View {
+    @EnvironmentObject var app: AppModel
+    var search: String
+
+    var body: some View {
+        let listings = app.visibleListings(search: search)
+        if !listings.isEmpty {
+            List(selection: $app.selectedListingID) {
+                ForEach(listings) { listing in
+                    FoundRow(listing: listing, fit: app.fit(for: listing)).tag(listing.id)
+                }
+            }
+            .listStyle(.inset)
+        } else if !search.trimmed.isEmpty {
+            Text("No listings match “\(search.trimmed)”.").font(.callout).foregroundStyle(.secondary).padding()
+            Spacer()
+        } else {
+            emptyState
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        let boards = app.data.discovery.companies.filter { $0.enabled && $0.board != .none }.count
+        if !app.data.preferences.publicJobBoards {
+            EmptyState(symbol: "lock.shield", title: "Job board searches are off",
+                       message: "Turn on public job board feeds in Privacy & Settings to see listings here.",
+                       actionTitle: "Open Privacy & Settings") { app.selection = .settings }
+        } else if boards == 0 {
+            EmptyState(symbol: "antenna.radiowaves.left.and.right", title: "No company job boards connected",
+                       message: "Connect boards in Find Jobs (“Find Board” next to a company) and their listings will appear here.",
+                       actionTitle: "Open Find Jobs") { app.selection = .discover }
+        } else if app.listingStatus != nil {
+            EmptyState(symbol: "hourglass", title: "Checking company job boards", message: "Listings appear here as soon as the search finishes.")
+        } else if app.data.found.lastSearch == nil {
+            EmptyState(symbol: "magnifyingglass", title: "Not checked yet",
+                       message: "Job Bot reads public job lists from \(boards) company boards. Nothing about you is sent.",
+                       actionTitle: "Check Now") { Task { await app.runDiscovery() } }
+        } else {
+            EmptyState(symbol: "tray", title: "No open roles match right now",
+                       message: "Job Bot checked \(boards) company boards for titles matching your search terms in your chosen locations. Add search terms or locations to widen the search, or check back later.",
+                       actionTitle: "Edit Search") { app.selection = .discover }
+        }
+    }
+}
+
+struct FoundRow: View {
+    var listing: FoundListing
+    var fit: Fit
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if !listing.viewed {
+                    Circle().fill(Palette.accent).frame(width: 7, height: 7).help("New")
+                }
+                Text(listing.job.displayTitle).font(.headline).lineLimit(2)
+            }
+            Text(listing.job.displayEmployer).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 6) {
+                FitPill(fit: fit)
+                if !listing.job.location.isEmpty {
+                    Text(listing.job.location).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            if let posted = listing.job.postedDate {
+                Text("Posted \(posted.shortDate)").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+struct FitPill: View {
+    var fit: Fit
+
+    var body: some View {
+        switch fit.level {
+        case .strong: Pill(text: fit.summary, color: Palette.strong, symbol: "checkmark.circle")
+        case .partial: Pill(text: fit.summary, color: Palette.partial, symbol: "circle.lefthalf.filled")
+        case .low: Pill(text: fit.summary, color: Palette.gap, symbol: "circle")
+        case .unknown: Pill(text: fit.summary, symbol: "questionmark.circle")
+        }
+    }
+}
+
+/// A found listing, read and compared, before it's saved.
+struct ListingDetailView: View {
+    @EnvironmentObject var app: AppModel
+    let listingID: String
+    @State private var showDescription = false
+
+    var body: some View {
+        if let listing = app.listing(listingID) {
+            let job = listing.job
+            let report = app.report(for: job)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(job.displayTitle).font(.title2.weight(.semibold)).textSelection(.enabled)
+                            Text([job.displayEmployer, job.location].filter { !$0.isEmpty }.joined(separator: " · "))
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Pill(text: job.source, symbol: "antenna.radiowaves.left.and.right")
+                                if let posted = job.postedDate { Pill(text: "Posted \(posted.shortDate)", symbol: "calendar") }
+                                Pill(text: "Found \(listing.firstSeen.shortDate)", symbol: "calendar.badge.plus")
+                            }
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 8) {
+                            Button { app.saveListing(listingID) } label: {
+                                Label("Save to My Jobs", systemImage: "tray.and.arrow.down")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .help("Move it to Saved, where you can compare it in detail, tailor your resume and write a cover letter")
+                            HStack(spacing: 12) {
+                                if let url = URL(string: job.url), !job.url.isEmpty {
+                                    Link(destination: url) { Label("Open Posting", systemImage: "safari") }
+                                }
+                                Button("Not Interested") { app.dismissListing(listingID) }
+                                    .help("Hide this listing; it won't come back in later searches")
+                            }
+                            .font(.callout)
+                        }
+                    }
+                    FitCard(report: report)
+                    PayCard(job: job)
+                    Card {
+                        Text("What the posting asks for").font(.headline)
+                        if job.parsed.isEmpty {
+                            Text("Job Bot couldn't separate this posting into responsibilities and qualifications. The full description is below, and the comparison uses all of it.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        ParsedJobView(parsed: job.parsed)
+                    }
+                    DisclosureGroup("Full description", isExpanded: $showDescription) {
+                        Text(job.descriptionText.isEmpty ? "The board didn't include a description. Open the posting to read it." : job.descriptionText)
+                            .font(.callout)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                    }
+                    Text("Found on \(listing.company)'s public job board. Only a request for the job list was sent; nothing about you.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(20)
+            }
+        }
+    }
+}
+
+/// A short version of the comparison: how much of the required list the master resume speaks to.
+struct FitCard: View {
+    var report: MatchReport
+
+    var body: some View {
+        let fit = report.fit
+        let gaps = report.gaps.filter { $0.kind == .required }
+        Card {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Compared with your master resume").font(.headline)
+                Spacer()
+                FitPill(fit: fit)
+            }
+            if fit.requiredTotal > 0 {
+                Text("\(fit.requiredCovered) of \(fit.requiredTotal) required qualifications have evidence in your master resume. This shows what your resume speaks to; it doesn't predict how an employer will decide.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("The posting doesn't list required qualifications separately, so this compares its keywords.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if !gaps.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("No evidence found yet for").font(.subheadline.weight(.medium))
+                    ForEach(gaps.prefix(4)) { g in
+                        Text("• " + g.text).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if gaps.count > 4 { Text("and \(gaps.count - 4) more").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            if !report.matchedKeywords.isEmpty {
+                FlowLayout {
+                    ForEach(report.matchedKeywords.prefix(10), id: \.self) { Pill(text: $0, color: Palette.strong, symbol: "checkmark") }
+                    ForEach(report.missingKeywords.prefix(6), id: \.self) { Pill(text: $0, color: Palette.gap) }
+                }
+            }
+            Text("Save it to see every requirement with its evidence, answer follow-up questions, and tailor your resume.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

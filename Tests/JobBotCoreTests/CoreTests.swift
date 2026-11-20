@@ -781,6 +781,27 @@ final class ListingTests: XCTestCase {
             let parsed = job.toJob().parsed
             print("LIVE job: [\(job.board.shortName)] \(job.title) | \(job.employer) | \(job.location) | remote=\(job.remote) | posted=\(job.posted.map { "\($0)" } ?? "-") | desc=\(job.descriptionHTML.count) | resp=\(parsed.responsibilities.count) req=\(parsed.requiredQualifications.count) pref=\(parsed.preferredQualifications.count) | \(job.url)")
         }
+        // Raw answers from boards that returned nothing, to tell "no openings" from a changed feed.
+        let quiet = settings.companies.filter { c in
+            c.board != .none && !outcome.jobs.contains { $0.origin == c.name }
+        }
+        for c in quiet {
+            guard let request = c.board.listingRequests(token: c.boardToken, terms: settings.searchTerms).first else { continue }
+            var r = URLRequest(url: request.url)
+            r.httpMethod = request.method
+            r.httpBody = request.body
+            r.setValue("application/json", forHTTPHeaderField: "Accept")
+            r.setValue("JobBot/1.0 (Macintosh; personal job search app)", forHTTPHeaderField: "User-Agent")
+            if request.body != nil { r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+            do {
+                let (data, response) = try await session.data(for: r)
+                let http = response as? HTTPURLResponse
+                let text = String(decoding: data.prefix(500), as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
+                print("LIVE raw \(c.name) [\(c.board.shortName)] \(request.url.absoluteString) -> \(http?.statusCode ?? 0) server=\(http?.value(forHTTPHeaderField: "Server") ?? "-"): \(text)")
+            } catch {
+                print("LIVE raw \(c.name): \(error.localizedDescription)")
+            }
+        }
         XCTAssertFalse(outcome.searched.isEmpty)
     }
 }

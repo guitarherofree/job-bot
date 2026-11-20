@@ -10,6 +10,7 @@ enum WebFetcher {
     enum FetchError: Error, LocalizedError {
         case notAllowed(String)
         case blocked(String)
+        case boardBlocked(String)
         case notFound
         case http(Int)
         case offline(String)
@@ -19,6 +20,7 @@ enum WebFetcher {
             switch self {
             case .notAllowed(let why): return why
             case .blocked(let host): return "\(host) didn't let Job Bot read this page (it requires sign-in or blocks automated visitors). Open it in your browser, copy the job description, and paste it instead."
+            case .boardBlocked(let host): return "\(host) didn't let Job Bot read its job list. Open the careers page in your browser instead."
             case .notFound: return "The page wasn't found. The posting may have been removed."
             case .http(let code): return "The site answered with an error (\(code)). Try again later, or paste the description instead."
             case .offline(let why): return "Couldn't reach the site: \(why)"
@@ -89,7 +91,7 @@ enum WebFetcher {
         switch http.statusCode {
         case 200..<300: return data
         case 404: throw FetchError.notFound
-        case 401, 403, 429: throw FetchError.blocked(url.host ?? "The job board")
+        case 401, 403, 429: throw FetchError.boardBlocked(url.host ?? "The job board")
         default: throw FetchError.http(http.statusCode)
         }
     }

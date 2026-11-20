@@ -17,6 +17,7 @@ public struct RootView: View {
                 Section("Explore") {
                     row(.discover)
                     row(.pivots)
+                    row(.credentials)
                     row(.examples)
                 }
                 Section {
@@ -87,6 +88,7 @@ public struct RootView: View {
         case .tracker: TrackerView()
         case .discover: DiscoverView()
         case .pivots: PivotView()
+        case .credentials: CredentialsView()
         case .examples: ExamplesView()
         case .settings: SettingsView()
         }

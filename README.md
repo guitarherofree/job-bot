@@ -52,7 +52,9 @@ Use **Job Bot › Check for Updates…** (or leave automatic checks on). Job Bot
 
 **Find Jobs.** Search terms (starting with Assessment Specialist, ELA Content Developer and Item Writer), location filters (Remote, Atlanta and New York checked by default, an All option, and custom locations), job sites opened in your browser with your search terms, and 42 education companies with their careers pages. Prodigy, Edmentum, CommonLit and Seesaw publish public job-board feeds (Ashby, Greenhouse, Lever), so Job Bot can list their matching openings directly; for any other company with such a feed, "Find board" connects it.
 
-**Pivot Paths.** Adjacent roles such as instructional design and curriculum design, with the profile evidence that supports each and the skills that may be missing; suggested search terms; credentials with the reason, time and cost from the source (estimates and unknowns are labeled) and a link; and pay comparison against your current or target pay.
+**Pivot Paths.** Adjacent roles such as instructional design and curriculum design, with the profile evidence that supports each and the skills that may be missing; suggested search terms; and pay comparison against your current or target pay.
+
+**Credentials.** Certifications, workshops and degree programs related to your pivot roles (or all of them), each with the reason it may help, time and cost from the source (estimates and unknowns are labeled) and a link.
 
 **Examples.** Paste a resume you have permission to use and Job Bot keeps only general patterns (role titles, credentials, skills, how achievements are described). The text is discarded and nothing distinctive is stored.
 

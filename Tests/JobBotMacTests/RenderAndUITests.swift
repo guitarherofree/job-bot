@@ -203,6 +203,8 @@ final class UISnapshotTests: XCTestCase {
         snapshot(RootView(), name: "06-settings")
         model.selection = .examples
         snapshot(RootView(), name: "07-examples")
+        model.selection = .credentials
+        snapshot(RootView(), name: "08-credentials")
     }
 
     func testJobTabs() {

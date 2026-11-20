@@ -46,7 +46,15 @@ struct PivotView: View {
                     Text("Add your master resume to see which roles your experience supports.").foregroundStyle(.secondary)
                 }
                 ForEach(assessments) { a in RoleCard(assessment: a) }
-                CredentialsSection(roles: Array(assessments.prefix(3).map { $0.role.title }) + app.data.pivots.titles)
+                Card {
+                    HStack {
+                        Label("Credentials for these roles", systemImage: "rosette").font(.headline)
+                        Spacer()
+                        Button("Open Credentials") { app.selection = .credentials }
+                    }
+                    Text("Certifications, workshops and degree programs, with time, cost and sources, are in their own section.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 PaySection()
             }
             .padding(20)
@@ -97,51 +105,6 @@ struct RoleCard: View {
                 .padding(.top, 6)
             } label: {
                 Text("Evidence and gaps").font(.callout)
-            }
-        }
-    }
-}
-
-struct CredentialsSection: View {
-    var roles: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Credentials to consider").font(.title3.weight(.semibold))
-            Text("Time and cost come from each source as of the date shown. Items marked “Estimate” or “Unknown” weren't confirmed on the provider's own page; check the link before deciding.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            ForEach(Credentials.relevant(to: roles)) { c in
-                Card {
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(c.name).font(.headline)
-                            Text("\(c.issuer) · \(c.kind)").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if let url = URL(string: c.url) {
-                            Link(destination: url) { Label("Source", systemImage: "arrow.up.right.square") }.font(.callout)
-                        }
-                    }
-                    Text(c.why).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
-                        GridRow {
-                            Text("Time").foregroundStyle(.secondary)
-                            Text(c.time)
-                        }
-                        GridRow {
-                            Text("Cost").foregroundStyle(.secondary)
-                            Text(c.cost)
-                        }
-                        GridRow {
-                            Text("Based on").foregroundStyle(.secondary)
-                            Text("\(c.basis) (checked \(c.checked))")
-                        }
-                    }
-                    .font(.callout)
-                    FlowLayout {
-                        ForEach(c.relevantTo, id: \.self) { Pill(text: $0, symbol: "arrow.triangle.branch") }
-                    }
-                }
             }
         }
     }

@@ -6,7 +6,7 @@ import JobBotCore
 import JobBotRender
 
 enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
-    case profile, jobs, tracker, discover, pivots, examples, settings
+    case profile, jobs, tracker, discover, pivots, credentials, examples, settings
 
     var id: String { rawValue }
 
@@ -17,6 +17,7 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
         case .tracker: return "Applications"
         case .discover: return "Find Jobs"
         case .pivots: return "Pivot Paths"
+        case .credentials: return "Credentials"
         case .examples: return "Examples"
         case .settings: return "Privacy & Settings"
         }
@@ -29,6 +30,7 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
         case .tracker: return "list.bullet.rectangle"
         case .discover: return "magnifyingglass"
         case .pivots: return "arrow.triangle.branch"
+        case .credentials: return "rosette"
         case .examples: return "doc.text.magnifyingglass"
         case .settings: return "lock.shield"
         }

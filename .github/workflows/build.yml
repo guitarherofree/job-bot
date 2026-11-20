@@ -1,0 +1,98 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # Apple Silicon runners are often backed up; the Intel runner builds a universal app.
+    runs-on: macos-15-intel
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+
+      - name: Build
+        run: swift build 2>&1 | tee build.log
+
+      - name: Test
+        env:
+          JOBBOT_PREVIEWS: ${{ github.workspace }}/previews
+        run: swift test 2>&1 | tee test.log
+
+      - name: Print previews into the log
+        if: always()
+        run: |
+          [ -d previews ] || exit 0
+          for f in previews/*.txt; do
+            [ -f "$f" ] || continue
+            echo "=====TEXT $(basename "$f")"
+            cat "$f"
+            echo ""
+            echo "=====END"
+          done
+          for f in previews/*.png; do
+            [ -f "$f" ] || continue
+            sips -s format jpeg -s formatOptions 60 "$f" --out "${f%.png}.jpg" >/dev/null 2>&1 || continue
+            echo "=====B64 $(basename "${f%.png}.jpg")"
+            base64 -b 120 -i "${f%.png}.jpg"
+            echo "=====END"
+          done
+
+      - name: Upload previews and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: previews
+          path: |
+            previews
+            build.log
+            test.log
+          if-no-files-found: ignore
+
+      - name: Package the app
+        run: bash Scripts/build_app.sh --skip-tests --no-open --zip --universal
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: build/Job-Bot-*.zip
+
+      - name: Publish the release
+        # Publishes when VERSION names a version that hasn't been released yet (after the tests
+        # above have passed). Pushing a matching v* tag works too.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="v$VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$TAG" ]]; then
+            echo "The tag $GITHUB_REF_NAME doesn't match the VERSION file ($VERSION)."
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to publish."
+            exit 0
+          fi
+          NOTES="release-notes/$VERSION.md"
+          if [ -f "$NOTES" ]; then
+            gh release create "$TAG" "build/Job-Bot-$VERSION.zip" --target "$GITHUB_SHA" --title "Job Bot $VERSION" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" "build/Job-Bot-$VERSION.zip" --target "$GITHUB_SHA" --title "Job Bot $VERSION" --generate-notes
+          fi
